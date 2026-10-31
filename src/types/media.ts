@@ -1,4 +1,10 @@
-export type MediaType = "photo" | "video";
+export type MediaType = "photo" | "video" | "document";
+export type LibraryKind = "photos" | "documents";
+
+export interface DocumentFolder {
+  token: string;
+  name: string;
+}
 
 export interface MediaItem {
   id: string;
@@ -7,10 +13,16 @@ export interface MediaItem {
   mediaType: MediaType;
   creationTime: number;
   albumId?: string;
+  folderToken?: string;
+  mimeType?: string;
+  size?: number;
 }
 
 export interface SessionState {
   id: string;
+  kind: LibraryKind;
+  name: string;
+  folders: DocumentFolder[];
   startDate: number;
   currentIndex: number;
   lastAnalyzedId: string | null;

@@ -1,0 +1,6 @@
+{
+  "name": "document-library",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Photinder native access to user-selected document folders"
+}

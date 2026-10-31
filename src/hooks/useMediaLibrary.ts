@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import * as MediaLibrary from "expo-media-library/legacy";
 
 import type { MediaItem } from "../types/media";
@@ -19,12 +19,14 @@ function toMediaItem(asset: MediaLibrary.Asset): MediaItem {
 
 export function useMediaLibrary(startDate: number | null) {
   const [items, setItems] = useState<MediaItem[]>([]);
-  const [isLoading, setIsLoading] = useState(false);
+  const [isLoading, setIsLoading] = useState(startDate !== null);
+  const generation = useRef(0);
   const [error, setError] = useState<string | null>(null);
   const [hasPermission, setHasPermission] = useState(false);
   const [hasLimitedAccess, setHasLimitedAccess] = useState(false);
 
   const loadMedia = useCallback(async () => {
+    const request = ++generation.current;
     if (!startDate) {
       setItems([]);
       return;
@@ -35,6 +37,7 @@ export function useMediaLibrary(startDate: number | null) {
 
     try {
       const isAvailable = await MediaLibrary.isAvailableAsync();
+      if (request !== generation.current) return;
       if (!isAvailable) {
         setHasPermission(false);
         setError("La Media Library non e' disponibile su questo dispositivo.");
@@ -42,10 +45,12 @@ export function useMediaLibrary(startDate: number | null) {
       }
 
       let permission = await MediaLibrary.getPermissionsAsync(false, GRANULAR_PERMISSIONS);
+      if (request !== generation.current) return;
 
       if (!permission.granted) {
         permission = await MediaLibrary.requestPermissionsAsync(false, GRANULAR_PERMISSIONS);
       }
+      if (request !== generation.current) return;
 
       setHasPermission(permission.granted);
       setHasLimitedAccess((permission as { accessPrivileges?: string }).accessPrivileges === "limited");
@@ -66,7 +71,7 @@ export function useMediaLibrary(startDate: number | null) {
           after,
           createdBefore: startDate,
           mediaType: [MediaLibrary.MediaType.photo, MediaLibrary.MediaType.video],
-          sortBy: [MediaLibrary.SortBy.creationTime]
+          sortBy: [[MediaLibrary.SortBy.creationTime, false]]
         });
 
         collected.push(
@@ -77,19 +82,21 @@ export function useMediaLibrary(startDate: number | null) {
 
         after = page.endCursor;
         hasNextPage = page.hasNextPage;
+        if (request !== generation.current) return;
       }
 
-      setItems(collected);
+      if (request === generation.current) setItems(collected);
     } catch (loadError) {
       const message = loadError instanceof Error ? loadError.message : "Errore sconosciuto.";
-      setError(`Impossibile caricare la galleria: ${message}`);
+      if (request === generation.current) setError(`Impossibile caricare la galleria: ${message}`);
     } finally {
-      setIsLoading(false);
+      if (request === generation.current) setIsLoading(false);
     }
   }, [startDate]);
 
   useEffect(() => {
     void loadMedia();
+    return () => { generation.current++; };
   }, [loadMedia]);
 
   return {

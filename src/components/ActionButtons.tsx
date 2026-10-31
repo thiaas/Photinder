@@ -1,4 +1,6 @@
 import { Pressable, StyleSheet, Text, View } from "react-native";
+import { Check, X } from "lucide-react-native";
+import { useLibraryColor } from "../theme/LibraryTheme";
 
 interface ActionButtonsProps {
   disabled?: boolean;
@@ -15,6 +17,7 @@ export default function ActionButtons({
   onKeep,
   onTrash
 }: ActionButtonsProps) {
+  const color = useLibraryColor();
   return (
     <View style={styles.row}>
       <Pressable
@@ -27,6 +30,7 @@ export default function ActionButtons({
           (pressed || disabled) && styles.buttonMuted
         ]}
       >
+        <X color="#dc2626" size={22} />
         <Text style={styles.trashText}>{trashLabel}</Text>
       </Pressable>
       <Pressable
@@ -36,9 +40,11 @@ export default function ActionButtons({
         style={({ pressed }) => [
           styles.button,
           styles.keep,
+          { backgroundColor: color, borderColor: color },
           (pressed || disabled) && styles.buttonMuted
         ]}
       >
+        <Check color="white" size={22} />
         <Text style={styles.keepText}>{keepLabel}</Text>
       </Pressable>
     </View>
@@ -51,6 +57,8 @@ const styles = StyleSheet.create({
     gap: 12
   },
   button: {
+    flexDirection: "row",
+    gap: 8,
     flex: 1,
     minHeight: 52,
     alignItems: "center",

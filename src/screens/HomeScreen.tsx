@@ -1,10 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { ActivityIndicator, Linking, Pressable, StyleSheet, Text, View } from "react-native";
+import { ActivityIndicator, Linking, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 
 import ActionButtons from "../components/ActionButtons";
 import MediaCard from "../components/MediaCard";
 import UndoBar from "../components/UndoBar";
-import { useMediaLibrary } from "../hooks/useMediaLibrary";
+import { useSessionLibrary } from "../hooks/useSessionLibrary";
+import { useLibraryColor } from "../theme/LibraryTheme";
+import { resumePosition, undoProgress, type UndoSnapshot } from "../utils/sessionProgress";
 import type { MediaItem, SessionState } from "../types/media";
 import { formatMediaDate, requestLimitedLibraryChange, uniqueTrashItems } from "../utils/mediaActions";
 
@@ -25,16 +27,15 @@ export default function HomeScreen({
   onMissingResumeItem,
   onSessionChange
 }: HomeScreenProps) {
-  const { error, hasLimitedAccess, isLoading, items, reload } = useMediaLibrary(session.startDate);
+  const { error, hasLimitedAccess, isLoading, items, reload } = useSessionLibrary(session);
+  const color = useLibraryColor();
   const [currentIndex, setCurrentIndex] = useState(session.currentIndex);
   const [lastDiscarded, setLastDiscarded] = useState<MediaItem | null>(null);
   const resumeCheckedRef = useRef(!isResumeMode);
   const undoTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  useEffect(() => {
-    setCurrentIndex(session.currentIndex);
-    resumeCheckedRef.current = !isResumeMode;
-  }, [session.id, session.startDate, isResumeMode]);
+  const undoSnapshotRef = useRef<UndoSnapshot | null>(null);
+  const busyRef = useRef(false);
+  const [busy, setBusy] = useState(false);
 
   useEffect(() => {
     return () => {
@@ -45,37 +46,23 @@ export default function HomeScreen({
   }, []);
 
   useEffect(() => {
-    if (isLoading || resumeCheckedRef.current || items.length === 0) {
+    if (isLoading || error || resumeCheckedRef.current) {
       return;
     }
 
     resumeCheckedRef.current = true;
 
-    if (!session.lastAnalyzedId) {
-      setCurrentIndex(session.currentIndex);
-      return;
-    }
-
-    const savedIndex = items.findIndex((item) => item.id === session.lastAnalyzedId);
-    if (savedIndex === -1) {
+    const position = resumePosition(items, session);
+    setCurrentIndex(position.index);
+    if (position.missing) {
       onMissingResumeItem();
       return;
     }
-
-    const nextIndex = Math.min(savedIndex + 1, items.length);
-    setCurrentIndex(nextIndex);
-
-    if (nextIndex !== session.currentIndex || session.totalCount !== items.length) {
-      void onSessionChange({
-        ...session,
-        currentIndex: nextIndex,
-        totalCount: items.length,
-        updatedAt: Date.now()
-      });
-    }
-  }, [isLoading, items, onMissingResumeItem, onSessionChange, session]);
+  }, [isLoading, error, items, onMissingResumeItem, session]);
 
   const currentItem = items[currentIndex] ?? null;
+  const activeItemRef = useRef<string | null>(null);
+  activeItemRef.current = currentItem?.id ?? null;
 
   const progressLabel = useMemo(() => {
     if (items.length === 0) {
@@ -98,27 +85,30 @@ export default function HomeScreen({
   };
 
   const advance = async (action: "keep" | "trash") => {
-    if (!currentItem) {
+    if (!currentItem || busyRef.current || activeItemRef.current !== currentItem.id) {
       return;
     }
 
-    const nextIndex = currentIndex + 1;
-    const nextTrash = action === "trash" ? uniqueTrashItems([...session.trash, currentItem]) : session.trash;
-
-    setCurrentIndex(nextIndex);
-    await persistProgress(nextIndex, currentItem, nextTrash);
-
-    if (action === "trash") {
-      setLastDiscarded(currentItem);
-      if (undoTimerRef.current) {
-        clearTimeout(undoTimerRef.current);
+    busyRef.current = true;
+    setBusy(true);
+    try {
+      const nextIndex = currentIndex + 1;
+      const nextTrash = action === "trash" ? uniqueTrashItems([...session.trash, currentItem]) : session.trash.filter((item) => item.id !== currentItem.id);
+      await persistProgress(nextIndex, currentItem, nextTrash);
+      setCurrentIndex(nextIndex);
+      if (action === "trash") {
+        undoSnapshotRef.current = { index: currentIndex, previousId: session.lastAnalyzedId, previousDate: session.lastAnalyzedCreationTime, wasInTrash: session.trash.some((item) => item.id === currentItem.id) };
+        setLastDiscarded(currentItem);
+        if (undoTimerRef.current) clearTimeout(undoTimerRef.current);
+        undoTimerRef.current = setTimeout(() => { setLastDiscarded(null); undoSnapshotRef.current = null; }, 5000);
       }
-      undoTimerRef.current = setTimeout(() => setLastDiscarded(null), 5000);
-    }
+    } catch { /* The parent reports storage errors; the current card remains available. */ }
+    finally { busyRef.current = false; setBusy(false); }
   };
 
   const undoLastTrash = async () => {
-    if (!lastDiscarded) {
+    const snapshot = undoSnapshotRef.current;
+    if (!lastDiscarded || !snapshot || busyRef.current) {
       return;
     }
 
@@ -127,38 +117,34 @@ export default function HomeScreen({
       undoTimerRef.current = null;
     }
 
-    const nextIndex = Math.max(0, currentIndex - 1);
-    const previousItem = nextIndex > 0 ? items[nextIndex - 1] : null;
-    const nextTrash = session.trash.filter((item) => item.id !== lastDiscarded.id);
+    const nextIndex = snapshot.index;
 
-    setLastDiscarded(null);
-    setCurrentIndex(nextIndex);
-    await onSessionChange({
-      ...session,
-      currentIndex: nextIndex,
-      lastAnalyzedId: previousItem?.id ?? null,
-      lastAnalyzedCreationTime: previousItem?.creationTime ?? null,
-      trash: nextTrash,
-      totalCount: items.length,
-      updatedAt: Date.now()
-    });
+    busyRef.current = true;
+    setBusy(true);
+    try {
+      await onSessionChange(undoProgress(session, lastDiscarded, snapshot));
+      setLastDiscarded(null);
+      undoSnapshotRef.current = null;
+      setCurrentIndex(nextIndex);
+    } catch { /* Keep the undo action available after a failed save. */ }
+    finally { busyRef.current = false; setBusy(false); }
   };
 
   if (isLoading) {
     return (
       <View style={styles.center}>
-        <ActivityIndicator color="#111827" size="large" />
-        <Text style={styles.loadingText}>Carico foto e video...</Text>
+        <ActivityIndicator color={color} size="large" />
+        <Text style={styles.loadingText}>{session.kind === "documents" ? "Carico documenti..." : "Carico foto e video..."}</Text>
       </View>
     );
   }
 
   if (error) {
     return (
-      <View style={styles.centerPadded}>
+      <ScrollView contentContainerStyle={styles.centerPadded}>
         <Text style={styles.errorTitle}>Accesso non disponibile</Text>
         <Text style={styles.errorText}>{error}</Text>
-        <Pressable accessibilityRole="button" onPress={reload} style={styles.primaryButton}>
+        <Pressable accessibilityRole="button" onPress={reload} style={[styles.primaryButton, { backgroundColor: color }]}>
           <Text style={styles.primaryText}>Riprova</Text>
         </Pressable>
         <Pressable accessibilityRole="button" onPress={() => void Linking.openSettings()} style={styles.secondaryButton}>
@@ -167,34 +153,36 @@ export default function HomeScreen({
         <Pressable accessibilityRole="button" onPress={onChooseNewDate} style={styles.textButton}>
           <Text style={styles.textButtonLabel}>Scegli nuova data</Text>
         </Pressable>
-      </View>
+      </ScrollView>
     );
   }
 
   if (!currentItem) {
     return (
-      <View style={styles.centerPadded}>
+      <ScrollView contentContainerStyle={styles.centerPadded}>
         <Text style={styles.doneTitle}>Fine sessione</Text>
         <Text style={styles.doneText}>Non ci sono altri elementi da analizzare per questa data.</Text>
         <Text style={styles.doneText}>Cestino: {session.trash.length}</Text>
-        <Pressable accessibilityRole="button" onPress={onGoToTrash} style={styles.primaryButton}>
+        <Text style={styles.doneText}>Ultimo analizzato: {formatMediaDate(session.lastAnalyzedCreationTime)}</Text>
+        <UndoBar visible={Boolean(lastDiscarded)} onUndo={() => void undoLastTrash()} />
+        <Pressable accessibilityRole="button" onPress={onGoToTrash} style={[styles.primaryButton, { backgroundColor: color }]}>
           <Text style={styles.primaryText}>Apri cestino</Text>
         </Pressable>
         <Pressable accessibilityRole="button" onPress={onChooseNewDate} style={styles.secondaryButton}>
           <Text style={styles.secondaryText}>Nuova data</Text>
         </Pressable>
-      </View>
+      </ScrollView>
     );
   }
 
   return (
     <View style={styles.container}>
       <View style={styles.topBar}>
-        <View>
+        <View style={{ flex: 1 }}>
           <Text style={styles.smallLabel}>Ultimo analizzato</Text>
-          <Text style={styles.lastDate}>{formatMediaDate(session.lastAnalyzedCreationTime)}</Text>
+          <Text numberOfLines={1} style={styles.lastDate}>{formatMediaDate(session.lastAnalyzedCreationTime)}</Text>
         </View>
-        <Pressable accessibilityRole="button" onPress={onGoToTrash} style={styles.trashButton}>
+        <Pressable accessibilityRole="button" onPress={onGoToTrash} style={[styles.trashButton, { backgroundColor: color }]}>
           <Text style={styles.trashButtonText}>Cestino {session.trash.length}</Text>
         </Pressable>
       </View>
@@ -214,19 +202,20 @@ export default function HomeScreen({
 
       <View style={styles.progressRow}>
         <Text style={styles.progress}>{progressLabel}</Text>
-        <Text style={styles.currentDate}>{formatMediaDate(currentItem.creationTime)}</Text>
+        <Text style={styles.currentDate}>{session.kind === "documents" ? "Modificato: " : ""}{formatMediaDate(currentItem.creationTime)}</Text>
       </View>
 
       <View style={styles.cardFrame}>
         <MediaCard
           key={currentItem.id}
           item={currentItem}
+          swipeEnabled={!busy}
           onSwipeLeft={() => void advance("trash")}
           onSwipeRight={() => void advance("keep")}
         />
       </View>
 
-      <ActionButtons onKeep={() => void advance("keep")} onTrash={() => void advance("trash")} />
+      <ActionButtons disabled={busy} onKeep={() => void advance("keep")} onTrash={() => void advance("trash")} />
       <UndoBar visible={Boolean(lastDiscarded)} onUndo={() => void undoLastTrash()} />
     </View>
   );
@@ -245,7 +234,7 @@ const styles = StyleSheet.create({
     gap: 12
   },
   centerPadded: {
-    flex: 1,
+    flexGrow: 1,
     justifyContent: "center",
     gap: 14,
     padding: 24
@@ -310,13 +299,15 @@ const styles = StyleSheet.create({
     fontWeight: "900"
   },
   currentDate: {
+    flexShrink: 1,
+    textAlign: "right",
     color: "#4b5563",
     fontSize: 13,
     fontWeight: "700"
   },
   cardFrame: {
     flex: 1,
-    minHeight: 280
+    minHeight: 0
   },
   errorTitle: {
     color: "#111827",

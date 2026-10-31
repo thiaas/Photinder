@@ -1,9 +1,10 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { Pressable, StyleSheet, Text, View } from "react-native";
 
 import ActionButtons from "../components/ActionButtons";
 import MediaCard from "../components/MediaCard";
 import type { MediaItem, SessionState } from "../types/media";
+import { useLibraryColor } from "../theme/LibraryTheme";
 
 interface TrashReviewScreenProps {
   session: SessionState;
@@ -12,28 +13,39 @@ interface TrashReviewScreenProps {
 }
 
 export default function TrashReviewScreen({ session, onBackToTrash, onSessionChange }: TrashReviewScreenProps) {
+  const color = useLibraryColor();
+  const busyRef = useRef(false);
+  const [busy, setBusy] = useState(false);
   const [reviewItems] = useState<MediaItem[]>(session.trash);
   const [currentIndex, setCurrentIndex] = useState(0);
   const [restoredCount, setRestoredCount] = useState(0);
 
   const currentItem = reviewItems[currentIndex] ?? null;
+  const activeItemRef = useRef<string | null>(null);
+  activeItemRef.current = currentItem?.id ?? null;
 
   const keepInTrash = () => {
+    if (busyRef.current || activeItemRef.current !== currentItem?.id) return;
+    activeItemRef.current = null;
     setCurrentIndex((value) => value + 1);
   };
 
   const restore = async () => {
-    if (!currentItem) {
+    if (!currentItem || busyRef.current || activeItemRef.current !== currentItem.id) {
       return;
     }
 
-    await onSessionChange({
+    busyRef.current = true;
+    setBusy(true);
+    try { await onSessionChange({
       ...session,
       trash: session.trash.filter((item) => item.id !== currentItem.id),
       updatedAt: Date.now()
     });
     setRestoredCount((value) => value + 1);
     setCurrentIndex((value) => value + 1);
+    } catch { /* The parent reports storage errors. */ }
+    finally { busyRef.current = false; setBusy(false); }
   };
 
   if (reviewItems.length === 0) {
@@ -67,7 +79,7 @@ export default function TrashReviewScreen({ session, onBackToTrash, onSessionCha
           <Text style={styles.backText}>Indietro</Text>
         </Pressable>
         <View style={styles.headerText}>
-          <Text style={styles.title}>Rivedi cestino</Text>
+          <Text style={[styles.title, { color }]}>Rivedi cestino</Text>
           <Text style={styles.subtitle}>
             {currentIndex + 1}/{reviewItems.length}
           </Text>
@@ -78,6 +90,7 @@ export default function TrashReviewScreen({ session, onBackToTrash, onSessionCha
         <MediaCard
           key={currentItem.id}
           item={currentItem}
+          swipeEnabled={!busy}
           leftLabel="Resta"
           onSwipeLeft={keepInTrash}
           onSwipeRight={() => void restore()}
@@ -86,6 +99,7 @@ export default function TrashReviewScreen({ session, onBackToTrash, onSessionCha
       </View>
 
       <ActionButtons
+        disabled={busy}
         keepLabel="Ripristina"
         onKeep={() => void restore()}
         onTrash={keepInTrash}
@@ -135,7 +149,7 @@ const styles = StyleSheet.create({
   },
   cardFrame: {
     flex: 1,
-    minHeight: 320
+    minHeight: 0
   },
   center: {
     flex: 1,

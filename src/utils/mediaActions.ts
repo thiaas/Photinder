@@ -1,6 +1,7 @@
 import * as MediaLibrary from "expo-media-library/legacy";
 
 import type { MediaItem } from "../types/media";
+import { deleteDocuments, type DeleteResult } from "../services/documents";
 
 export function dateAtEndOfDay(date: Date): number {
   const normalized = new Date(date);
@@ -9,7 +10,8 @@ export function dateAtEndOfDay(date: Date): number {
 }
 
 export function formatMediaDate(value: number | null | undefined): string {
-  if (!value) {
+  if (value === 0) return "Data non disponibile";
+  if (value === null || value === undefined) {
     return "Nessun elemento analizzato";
   }
 
@@ -34,13 +36,18 @@ export function uniqueTrashItems(items: MediaItem[]): MediaItem[] {
   });
 }
 
-export async function deleteMediaItemsPermanently(items: MediaItem[]): Promise<boolean> {
+export async function deleteMediaItemsPermanently(items: MediaItem[]): Promise<DeleteResult> {
   if (items.length === 0) {
-    return true;
+    return { deletedIds: [], failures: [] };
   }
 
+  if (items.every((item) => item.mediaType === "document")) return deleteDocuments(items);
+  if (items.some((item) => item.mediaType === "document")) throw new Error("Selezione mista non consentita.");
   const ids = items.map((item) => item.id);
-  return MediaLibrary.deleteAssetsAsync(ids);
+  const confirmed = await MediaLibrary.deleteAssetsAsync(ids);
+  return confirmed
+    ? { deletedIds: ids, failures: [] }
+    : { deletedIds: [], failures: ids.map((id) => ({ id, message: "Eliminazione annullata dal sistema." })) };
 }
 
 export async function requestLimitedLibraryChange(): Promise<void> {

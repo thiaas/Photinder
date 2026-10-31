@@ -1,27 +1,36 @@
 import { useState } from "react";
-import { Platform, Pressable, StyleSheet, Text, View } from "react-native";
+import { Alert, Platform, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import DateTimePicker from "@react-native-community/datetimepicker";
 
 import { dateAtEndOfDay, formatMediaDate } from "../utils/mediaActions";
+import { useLibraryColor } from "../theme/LibraryTheme";
+import { pickDocumentFolder } from "../services/documents";
+import type { DocumentFolder, LibraryKind } from "../types/media";
 
 interface DatePickerScreenProps {
   initialDate: number;
+  kind: LibraryKind;
+  initialFolders: DocumentFolder[];
+  foldersOnly?: boolean;
   onCancel: () => void;
-  onStart: (startDate: number) => void;
+  onStart: (startDate: number, folders: DocumentFolder[]) => void;
 }
 
-export default function DatePickerScreen({ initialDate, onCancel, onStart }: DatePickerScreenProps) {
+export default function DatePickerScreen({ initialDate, initialFolders, kind, foldersOnly = false, onCancel, onStart }: DatePickerScreenProps) {
+  const color = useLibraryColor();
+  const [folders, setFolders] = useState(initialFolders);
+  const [picking, setPicking] = useState(false);
   const [selectedDate, setSelectedDate] = useState(new Date(initialDate));
   const [isPickerVisible, setIsPickerVisible] = useState(Platform.OS === "ios");
 
   return (
-    <View style={styles.container}>
+    <ScrollView contentContainerStyle={styles.container}>
       <View style={styles.header}>
-        <Text style={styles.title}>Data di partenza</Text>
-        <Text style={styles.subtitle}>Gli elementi verranno mostrati da questa data verso il passato.</Text>
+        <Text style={styles.title}>{foldersOnly ? "Cartelle della sessione" : "Data di partenza"}</Text>
+        {!foldersOnly && <Text style={styles.subtitle}>Gli elementi verranno mostrati da questa data verso il passato.</Text>}
       </View>
 
-      <View style={styles.pickerBox}>
+      {!foldersOnly && <View style={styles.pickerBox}>
         <Text style={styles.label}>Parti da</Text>
         <Text style={styles.date}>{formatMediaDate(dateAtEndOfDay(selectedDate))}</Text>
         {Platform.OS === "android" ? (
@@ -31,6 +40,7 @@ export default function DatePickerScreen({ initialDate, onCancel, onStart }: Dat
         ) : null}
         {isPickerVisible ? (
           <DateTimePicker
+            accentColor={color}
             maximumDate={new Date()}
             mode="date"
             onChange={(_, date) => {
@@ -45,30 +55,54 @@ export default function DatePickerScreen({ initialDate, onCancel, onStart }: Dat
             value={selectedDate}
           />
         ) : null}
-      </View>
+      </View>}
+
+      {kind === "documents" && <View style={styles.folders}>
+        <Text style={styles.label}>Cartelle</Text>
+        {folders.length === 0 && <Text style={styles.subtitle}>Nessuna cartella selezionata</Text>}
+        {folders.map((folder) => <View key={folder.token} style={styles.folderRow}>
+          <Text numberOfLines={2} style={styles.folderName}>{folder.name}</Text>
+          <Pressable accessibilityLabel={`Rimuovi ${folder.name}`} accessibilityRole="button" onPress={() => setFolders((current) => current.filter((item) => item.token !== folder.token))} style={styles.removeFolder}><Text style={{ color: "#cf2929", fontSize: 24 }}>×</Text></Pressable>
+        </View>)}
+        <Pressable disabled={picking} style={styles.pickButton} onPress={async () => {
+          setPicking(true);
+          try {
+            const folder = await pickDocumentFolder();
+            if (folder) setFolders((current) => [...current.filter((item) => item.token !== folder.token), folder]);
+          } catch (error) {
+            Alert.alert("Cartella non disponibile", error instanceof Error ? error.message : "Selezione non riuscita.");
+          } finally { setPicking(false); }
+        }}><Text style={{ color, fontWeight: "800" }}>{picking ? "Selezione..." : "Aggiungi cartella"}</Text></Pressable>
+      </View>}
 
       <View style={styles.actions}>
         <Pressable
           accessibilityRole="button"
-          onPress={() => onStart(dateAtEndOfDay(selectedDate))}
-          style={styles.primaryButton}
+          disabled={picking || (kind === "documents" && folders.length === 0)}
+          onPress={() => onStart(dateAtEndOfDay(selectedDate), folders)}
+          style={[styles.primaryButton, { backgroundColor: color, opacity: picking || (kind === "documents" && folders.length === 0) ? 0.4 : 1 }]}
         >
-          <Text style={styles.primaryText}>Inizia</Text>
+          <Text style={styles.primaryText}>{foldersOnly ? "Salva cartelle" : "Inizia"}</Text>
         </Pressable>
         <Pressable accessibilityRole="button" onPress={onCancel} style={styles.secondaryButton}>
           <Text style={styles.secondaryText}>Indietro</Text>
         </Pressable>
       </View>
-    </View>
+    </ScrollView>
   );
 }
 
 const styles = StyleSheet.create({
   container: {
-    flex: 1,
+    flexGrow: 1,
+    gap: 24,
     justifyContent: "space-between",
     padding: 24
   },
+  folders: { gap: 8 },
+  folderRow: { flexDirection: "row", alignItems: "center", gap: 12 },
+  folderName: { flex: 1, color: "#374151", fontSize: 15 },
+  removeFolder: { width: 44, height: 44, alignItems: "center", justifyContent: "center" },
   header: {
     gap: 8,
     paddingTop: 32

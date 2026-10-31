@@ -1,6 +1,8 @@
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { Alert, FlatList, Modal, Pressable, StyleSheet, Text, View } from "react-native";
 import { Image } from "expo-image";
+import { Check, FileText, Video } from "lucide-react-native";
+import { useLibraryColor } from "../theme/LibraryTheme";
 
 import MediaCard from "../components/MediaCard";
 import type { MediaItem, SessionState } from "../types/media";
@@ -11,9 +13,12 @@ interface TrashScreenProps {
   onBack: () => void;
   onReviewTrash: () => void;
   onSessionChange: (session: SessionState) => Promise<void>;
+  onBusyChange: (busy: boolean) => void;
 }
 
-export default function TrashScreen({ session, onBack, onReviewTrash, onSessionChange }: TrashScreenProps) {
+export default function TrashScreen({ session, onBack, onReviewTrash, onSessionChange, onBusyChange }: TrashScreenProps) {
+  const color = useLibraryColor();
+  const deletingRef = useRef(false);
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [previewItem, setPreviewItem] = useState<MediaItem | null>(null);
   const [isDeleting, setIsDeleting] = useState(false);
@@ -34,12 +39,13 @@ export default function TrashScreen({ session, onBack, onReviewTrash, onSessionC
       return;
     }
 
-    await onSessionChange({
+    try { await onSessionChange({
       ...session,
       trash: session.trash.filter((item) => !items.some((restored) => restored.id === item.id)),
       updatedAt: Date.now()
     });
     setSelectedIds([]);
+    } catch { /* The parent reports storage errors. */ }
   };
 
   const confirmDelete = (items: MediaItem[]) => {
@@ -49,7 +55,7 @@ export default function TrashScreen({ session, onBack, onReviewTrash, onSessionC
 
     Alert.alert(
       "Eliminazione definitiva",
-      `Eliminare definitivamente ${items.length} elemento/i dal telefono?`,
+      `Eliminare ${items.length} elemento/i originali? L'operazione puo' interessare anche cartelle sincronizzate e non e' annullabile dall'app.`,
       [
         { text: "Annulla", style: "cancel" },
         {
@@ -64,26 +70,33 @@ export default function TrashScreen({ session, onBack, onReviewTrash, onSessionC
   };
 
   const deleteItems = async (items: MediaItem[]) => {
+    if (deletingRef.current) return;
+    deletingRef.current = true;
     setIsDeleting(true);
+    onBusyChange(true);
 
     try {
-      const deleted = await deleteMediaItemsPermanently(items);
-      if (!deleted) {
-        Alert.alert("Eliminazione annullata", "Il sistema non ha confermato l'eliminazione.");
-        return;
+      const result = await deleteMediaItemsPermanently(items);
+      if (result.deletedIds.length > 0) {
+        try {
+          await onSessionChange({
+            ...session,
+            trash: session.trash.filter((item) => !result.deletedIds.includes(item.id)),
+            updatedAt: Date.now()
+          });
+        } catch {
+          Alert.alert("File eliminati", "Gli originali sono stati eliminati, ma il progresso non e' salvato. Usa Riprova nel messaggio in alto prima di chiudere l'app.");
+        }
       }
-
-      await onSessionChange({
-        ...session,
-        trash: session.trash.filter((item) => !items.some((deletedItem) => deletedItem.id === item.id)),
-        updatedAt: Date.now()
-      });
       setSelectedIds([]);
+      if (result.failures.length > 0) Alert.alert("Alcuni elementi non sono stati eliminati", `${result.deletedIds.length} eliminati; ${result.failures.length} rimasti nel cestino.\n${result.failures[0].message}`);
     } catch (error) {
       const message = error instanceof Error ? error.message : "Errore sconosciuto.";
       Alert.alert("Eliminazione non riuscita", message);
     } finally {
       setIsDeleting(false);
+      deletingRef.current = false;
+      onBusyChange(false);
     }
   };
 
@@ -91,17 +104,18 @@ export default function TrashScreen({ session, onBack, onReviewTrash, onSessionC
     const selected = selectedIds.includes(item.id);
 
     return (
-      <View style={[styles.tile, selected && styles.tileSelected]}>
+      <View style={[styles.tile, selected && { borderColor: color }]}>
         <Pressable accessibilityRole="button" onPress={() => toggleSelected(item.id)} style={styles.tilePreview}>
           {item.mediaType === "photo" ? (
             <Image contentFit="cover" source={{ uri: item.uri }} style={styles.thumb} />
           ) : (
             <View style={styles.videoThumb}>
-              <Text style={styles.videoLabel}>Video</Text>
+              {item.mediaType === "document" ? <FileText color="white" size={42} /> : <Video color="white" size={42} />}
+              <Text numberOfLines={1} style={styles.videoLabel}>{item.mediaType === "document" ? (item.filename.includes(".") ? item.filename.split(".").pop()?.toUpperCase() : "FILE") : "Video"}</Text>
             </View>
           )}
           <View style={styles.check}>
-            <Text style={styles.checkText}>{selected ? "✓" : ""}</Text>
+            {selected && <Check color="white" size={20} />}
           </View>
         </Pressable>
         <View style={styles.tileMeta}>
@@ -155,7 +169,7 @@ export default function TrashScreen({ session, onBack, onReviewTrash, onSessionC
           accessibilityRole="button"
           disabled={session.trash.length === 0}
           onPress={onReviewTrash}
-          style={[styles.wideButton, session.trash.length === 0 && styles.disabled]}
+          style={[styles.wideButton, { backgroundColor: color }, session.trash.length === 0 && styles.disabled]}
         >
           <Text style={styles.wideButtonText}>Rivedi cestino</Text>
         </Pressable>
@@ -327,12 +341,14 @@ const styles = StyleSheet.create({
     width: "100%"
   },
   videoThumb: {
+    gap: 8,
     flex: 1,
     alignItems: "center",
     justifyContent: "center",
     backgroundColor: "#1f2937"
   },
   videoLabel: {
+    textAlign: "center",
     color: "#fff",
     fontSize: 18,
     fontWeight: "900"
